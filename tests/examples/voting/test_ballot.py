@@ -1,138 +1,237 @@
-from ethereum.tools import tester
-import ethereum.utils as utils
-import ethereum.abi as abi
+import pytest
 
-def assert_tx_failed(ballot_tester, function_to_test, exception = tester.TransactionFailed):
-    """ Ensure that transaction fails, reverting state (to prevent gas exhaustion) """
-    initial_state = ballot_tester.s.snapshot()
-    ballot_tester.assertRaises(exception, function_to_test)
-    ballot_tester.s.revert(initial_state)
 
-class TestVoting(unittest.TestCase):
-    def setUp(self):
-        # Initialize tester, contract and expose relevant objects
-        self.t = tester
-        self.s = self.t.Chain()
-        from viper import compiler
-        self.t.languages['viper'] = compiler.Compiler()
-        contract_code = open('examples/voting/ballot.v.py').read()
-        self.c = self.s.contract(contract_code, language='viper', args=[["Clinton", "Trump"]])
+@pytest.fixture
+def c(get_contract):
+    with open("examples/voting/ballot.vy") as f:
+        contract_code = f.read()
+    return get_contract(contract_code, *[[b"Clinton", b"Trump"]])
 
-    def test_initial_state(self):
-        # Check chairperson is msg.sender
-        self.assertEqual(utils.remove_0x_head(self.c.get_chairperson()), self.t.a0.hex())
-        # Check propsal names are correct
-        self.assertEqual(self.c.get_proposals__name(0), b'Clinton\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00')
-        self.assertEqual(self.c.get_proposals__name(1), b'Trump\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00')
-        # Check proposal vote_count is 0
-        self.assertEqual(self.c.get_proposals__vote_count(0), 0)
-        self.assertEqual(self.c.get_proposals__vote_count(1), 0)
-        # Check voter_count is 0
-        self.assertEqual(self.c.get_voter_count(), 0)
-        # Check voter starts empty
-        self.assertEqual(self.c.get_voters__delegate(), '0x0000000000000000000000000000000000000000')
-        self.assertEqual(self.c.get_voters__vote(), 0)
-        self.assertEqual(self.c.get_voters__voted(), False)
-        self.assertEqual(self.c.get_voters__weight(), 0)
 
-    def test_give_the_right_to_vote(self):
-        self.c.give_right_to_vote(self.t.a1)
-        # Check voter given right has weight of 1
-        self.assertEqual(self.c.get_voters__weight(self.t.a1), 1)
-        # Check no other voter attributes have changed
-        self.assertEqual(self.c.get_voters__delegate(self.t.a1), '0x0000000000000000000000000000000000000000')
-        self.assertEqual(self.c.get_voters__vote(self.t.a1), 0)
-        self.assertEqual(self.c.get_voters__voted(self.t.a1), False)
-        # Chairperson can give themselves the right to vote
-        self.c.give_right_to_vote(self.t.a0)
-        # Check chairperson has weight of 1
-        self.assertEqual(self.c.get_voters__weight(self.t.a0), 1)
-        # Check voter_acount is 2
-        self.assertEqual(self.c.get_voter_count(), 2)
-        # Check several giving rights to vote
-        self.c.give_right_to_vote(self.t.a2)
-        self.c.give_right_to_vote(self.t.a3)
-        self.c.give_right_to_vote(self.t.a4)
-        self.c.give_right_to_vote(self.t.a5)
-        # Check voter_acount is now 6
-        self.assertEqual(self.c.get_voter_count(), 6)
-        # Check chairperson cannot give the right to vote twice to the same voter
-        assert_tx_failed(self, lambda: self.c.give_right_to_vote(self.t.a5))
-        # Check voters weight didn't change
-        self.assertEqual(self.c.get_voters__weight(self.t.a5), 1)
+z0 = "0x0000000000000000000000000000000000000000"
 
-    def test_delegate(self):
-        self.c.give_right_to_vote(self.t.a0)
-        self.c.give_right_to_vote(self.t.a1)
-        self.c.give_right_to_vote(self.t.a2)
-        self.c.give_right_to_vote(self.t.a3)
-        # Voter can delegate
-        self.c.delegate(self.t.a0, sender=self.t.k1)
-        # Voters weight is 1
-        self.assertEqual(self.c.get_voters__weight(self.t.a1), 1)
-        # Voter has voted
-        self.assertEqual(self.c.get_voters__voted(self.t.a1), True)
-        # Delegates weight is 2
-        self.assertEqual(self.c.get_voters__weight(self.t.a0), 2)
-        # Voter cannot delegate twice
-        assert_tx_failed(self, lambda: self.c.delegate(self.t.a2, sender=self.t.k1))
-        # Voter cannot delegate to themselves
-        assert_tx_failed(self, lambda: self.c.delegate(self.t.a2, sender=self.t.k2))
-        # Voter can delegatation is passed up to final delegate
-        self.c.delegate(self.t.a1, sender=self.t.k3)
-        # Delegates weight is 3
-        self.assertEqual(self.c.get_voters__weight(self.t.a0), 3)
 
-    def test_vote(self):
-        self.c.give_right_to_vote(self.t.a0)
-        self.c.give_right_to_vote(self.t.a1)
-        self.c.give_right_to_vote(self.t.a2)
-        self.c.give_right_to_vote(self.t.a3)
-        self.c.give_right_to_vote(self.t.a4)
-        self.c.give_right_to_vote(self.t.a5)
-        self.c.give_right_to_vote(self.t.a6)
-        self.c.delegate(self.t.a0, sender=self.t.k1)
-        self.c.delegate(self.t.a1, sender=self.t.k3)
-        # Voter can vote
-        self.c.vote(0)
-        # Vote count changes based on voters weight
-        self.assertEqual(self.c.get_proposals__vote_count(0), 3)
-        # Voter cannot vote twice
-        assert_tx_failed(self, lambda: self.c.vote(0))
-        # Voter cannot vote if they've delegated
-        assert_tx_failed(self, lambda: self.c.vote(0, sender=self.t.k1))
-        # Several voters can voter
-        self.c.vote(1, sender=self.t.k4)
-        self.c.vote(1, sender=self.t.k2)
-        self.c.vote(1, sender=self.t.k5)
-        self.c.vote(1, sender=self.t.k6)
-        self.assertEqual(self.c.get_proposals__vote_count(1), 4)
+def test_initial_state(w3, c):
+    a0 = w3.eth.accounts[0]
+    # Check chairperson is msg.sender
+    assert c.chairperson() == a0
+    # Check propsal names are correct
+    assert c.proposals(0)[0][:7] == b"Clinton"  # Proposal.name
+    assert c.proposals(1)[0][:5] == b"Trump"  # Proposal.name
+    # Check proposal voteCount is 0
+    assert c.proposals(0)[1] == 0  # Proposal.voteCount
+    assert c.proposals(1)[1] == 0  # Proposal.voteCount
+    # Check voterCount is 0
+    assert c.voterCount() == 0
+    # Check voter starts empty
+    assert c.voters(z0)[2] is None  # Voter.delegate
+    assert c.voters(z0)[3] == 0  # Voter.vote
+    assert c.voters(z0)[1] is False  # Voter.voted
+    assert c.voters(z0)[0] == 0  # Voter.weight
 
-    def test_winning_proposal(self):
-        self.c.give_right_to_vote(self.t.a0)
-        self.c.give_right_to_vote(self.t.a1)
-        self.c.give_right_to_vote(self.t.a2)
-        self.c.vote(0)
-        # Proposal 0 is now winning
-        self.assertEqual(self.c.winning_proposal(), 0)
-        self.c.vote(1, sender=self.t.k1)
-        # Proposal 0 is still winning (the proposals are tied)
-        self.assertEqual(self.c.winning_proposal(), 0)
-        self.c.vote(1, sender=self.t.k2)
-        # Proposal 2 is now winning
-        self.assertEqual(self.c.winning_proposal(), 1)
 
-    def test_winner_namer(self):
-        self.c.give_right_to_vote(self.t.a0)
-        self.c.give_right_to_vote(self.t.a1)
-        self.c.give_right_to_vote(self.t.a2)
-        self.c.delegate(self.t.a1, sender=self.t.k2)
-        self.c.vote(0)
-        # Proposal 0 is now winning
-        self.assertEqual(self.c.winner_name(), b'Clinton\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00')
-        self.c.vote(1, sender=self.t.k1)
-        # Proposal 2 is now winning
-        self.assertEqual(self.c.winner_name(), b'Trump\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00')
+def test_give_the_right_to_vote(w3, c, assert_tx_failed):
+    a0, a1, a2, a3, a4, a5 = w3.eth.accounts[:6]
+    c.giveRightToVote(a1, transact={})
+    # Check voter given right has weight of 1
+    assert c.voters(a1)[0] == 1  # Voter.weight
+    # Check no other voter attributes have changed
+    assert c.voters(a1)[2] is None  # Voter.delegate
+    assert c.voters(a1)[3] == 0  # Voter.vote
+    assert c.voters(a1)[1] is False  # Voter.voted
+    # Chairperson can give themselves the right to vote
+    c.giveRightToVote(a0, transact={})
+    # Check chairperson has weight of 1
+    assert c.voters(a0)[0] == 1  # Voter.weight
+    # Check voter_acount is 2
+    assert c.voterCount() == 2
+    # Check several giving rights to vote
+    c.giveRightToVote(a2, transact={})
+    c.giveRightToVote(a3, transact={})
+    c.giveRightToVote(a4, transact={})
+    c.giveRightToVote(a5, transact={})
+    # Check voter_acount is now 6
+    assert c.voterCount() == 6
+    # Check chairperson cannot give the right to vote twice to the same voter
+    assert_tx_failed(lambda: c.giveRightToVote(a5, transact={}))
+    # Check voters weight didn't change
+    assert c.voters(a5)[0] == 1  # Voter.weight
 
-if __name__ == '__main__':
-    unittest.main()
+
+def test_forward_weight(w3, c):
+    a0, a1, a2, a3, a4, a5, a6, a7, a8, a9 = w3.eth.accounts[:10]
+    c.giveRightToVote(a0, transact={})
+    c.giveRightToVote(a1, transact={})
+    c.giveRightToVote(a2, transact={})
+    c.giveRightToVote(a3, transact={})
+    c.giveRightToVote(a4, transact={})
+    c.giveRightToVote(a5, transact={})
+    c.giveRightToVote(a6, transact={})
+    c.giveRightToVote(a7, transact={})
+    c.giveRightToVote(a8, transact={})
+    c.giveRightToVote(a9, transact={})
+
+    # aN(V) in these comments means address aN has vote weight V
+
+    c.delegate(a2, transact={"from": a1})
+    # a1(0) -> a2(2)    a3(1)
+    c.delegate(a3, transact={"from": a2})
+    # a1(0) -> a2(0) -> a3(3)
+    assert c.voters(a1)[0] == 0  # Voter.weight
+    assert c.voters(a2)[0] == 0  # Voter.weight
+    assert c.voters(a3)[0] == 3  # Voter.weight
+
+    c.delegate(a9, transact={"from": a8})
+    # a7(1)    a8(0) -> a9(2)
+    c.delegate(a8, transact={"from": a7})
+    # a7(0) -> a8(0) -> a9(3)
+    assert c.voters(a7)[0] == 0  # Voter.weight
+    assert c.voters(a8)[0] == 0  # Voter.weight
+    assert c.voters(a9)[0] == 3  # Voter.weight
+    c.delegate(a7, transact={"from": a6})
+    c.delegate(a6, transact={"from": a5})
+    c.delegate(a5, transact={"from": a4})
+    # a4(0) -> a5(0) -> a6(0) -> a7(0) -> a8(0) -> a9(6)
+    assert c.voters(a9)[0] == 6  # Voter.weight
+    assert c.voters(a8)[0] == 0  # Voter.weight
+
+    # a3(3)    a4(0) -> a5(0) -> a6(0) -> a7(0) -> a8(0) -> a9(6)
+    c.delegate(a4, transact={"from": a3})
+    # a3(0) -> a4(0) -> a5(0) -> a6(0) -> a7(0) -> a8(3) -> a9(6)
+    # a3's vote weight of 3 only makes it to a8 in the delegation chain:
+    assert c.voters(a8)[0] == 3  # Voter.weight
+    assert c.voters(a9)[0] == 6  # Voter.weight
+
+    # call forward_weight again to move the vote weight the
+    # rest of the way:
+    c.forwardWeight(a8, transact={})
+    # a3(0) -> a4(0) -> a5(0) -> a6(0) -> a7(0) -> a8(0) -> a9(9)
+    assert c.voters(a8)[0] == 0  # Voter.weight
+    assert c.voters(a9)[0] == 9  # Voter.weight
+
+    # a0(1) -> a1(0) -> a2(0) -> a3(0) -> a4(0) -> a5(0) -> a6(0) -> a7(0) -> a8(0) -> a9(9)
+    c.delegate(a1, transact={"from": a0})
+    # a0's vote weight of 1 only makes it to a5 in the delegation chain:
+    # a0(0) -> a1(0) -> a2(0) -> a3(0) -> a4(0) -> a5(1) -> a6(0) -> a7(0) -> a8(0) -> a9(9)
+    assert c.voters(a5)[0] == 1  # Voter.weight
+    assert c.voters(a9)[0] == 9  # Voter.weight
+
+    # once again call forward_weight to move the vote weight the
+    # rest of the way:
+    c.forwardWeight(a5, transact={})
+    # a0(0) -> a1(0) -> a2(0) -> a3(0) -> a4(0) -> a5(0) -> a6(0) -> a7(0) -> a8(0) -> a9(10)
+    assert c.voters(a5)[0] == 0  # Voter.weight
+    assert c.voters(a9)[0] == 10  # Voter.weight
+
+
+def test_block_short_cycle(w3, c, assert_tx_failed):
+    a0, a1, a2, a3, a4, a5, a6, a7, a8, a9 = w3.eth.accounts[:10]
+    c.giveRightToVote(a0, transact={})
+    c.giveRightToVote(a1, transact={})
+    c.giveRightToVote(a2, transact={})
+    c.giveRightToVote(a3, transact={})
+    c.giveRightToVote(a4, transact={})
+    c.giveRightToVote(a5, transact={})
+
+    c.delegate(a1, transact={"from": a0})
+    c.delegate(a2, transact={"from": a1})
+    c.delegate(a3, transact={"from": a2})
+    c.delegate(a4, transact={"from": a3})
+    # would create a length 5 cycle:
+    assert_tx_failed(lambda: c.delegate(a0, transact={"from": a4}))
+
+    c.delegate(a5, transact={"from": a4})
+    # can't detect length 6 cycle, so this works:
+    c.delegate(a0, transact={"from": a5})
+    # which is fine for the contract; those votes are simply spoiled.
+    # but this is something the frontend should prevent for user friendliness
+
+
+def test_delegate(w3, c, assert_tx_failed):
+    a0, a1, a2, a3, a4, a5, a6 = w3.eth.accounts[:7]
+    c.giveRightToVote(a0, transact={})
+    c.giveRightToVote(a1, transact={})
+    c.giveRightToVote(a2, transact={})
+    c.giveRightToVote(a3, transact={})
+    # Voter's weight is 1
+    assert c.voters(a1)[0] == 1  # Voter.weight
+    # Voter can delegate: a1 -> a0
+    c.delegate(a0, transact={"from": a1})
+    # Voter's weight is now 0
+    assert c.voters(a1)[0] == 0  # Voter.weight
+    # Voter has voted
+    assert c.voters(a1)[1] is True  # Voter.voted
+    # Delegate's weight is 2
+    assert c.voters(a0)[0] == 2  # Voter.weight
+    # Voter cannot delegate twice
+    assert_tx_failed(lambda: c.delegate(a2, transact={"from": a1}))
+    # Voter cannot delegate to themselves
+    assert_tx_failed(lambda: c.delegate(a2, transact={"from": a2}))
+    # Voter CAN delegate to someone who hasn't been granted right to vote
+    # Exercise: prevent that
+    c.delegate(a6, transact={"from": a2})
+    # Voter's delegatation is passed up to final delegate, yielding:
+    # a3 -> a1 -> a0
+    c.delegate(a1, transact={"from": a3})
+    # Delegate's weight is 3
+    assert c.voters(a0)[0] == 3  # Voter.weight
+
+
+def test_vote(w3, c, assert_tx_failed):
+    a0, a1, a2, a3, a4, a5, a6, a7, a8, a9 = w3.eth.accounts[:10]
+    c.giveRightToVote(a0, transact={})
+    c.giveRightToVote(a1, transact={})
+    c.giveRightToVote(a2, transact={})
+    c.giveRightToVote(a3, transact={})
+    c.giveRightToVote(a4, transact={})
+    c.giveRightToVote(a5, transact={})
+    c.giveRightToVote(a6, transact={})
+    c.giveRightToVote(a7, transact={})
+    c.delegate(a0, transact={"from": a1})
+    c.delegate(a1, transact={"from": a3})
+    # Voter can vote
+    c.vote(0, transact={})
+    # Vote count changes based on voters weight
+    assert c.proposals(0)[1] == 3  # Proposal.voteCount
+    # Voter cannot vote twice
+    assert_tx_failed(lambda: c.vote(0))
+    # Voter cannot vote if they've delegated
+    assert_tx_failed(lambda: c.vote(0, transact={"from": a1}))
+    # Several voters can vote
+    c.vote(1, transact={"from": a4})
+    c.vote(1, transact={"from": a2})
+    c.vote(1, transact={"from": a5})
+    c.vote(1, transact={"from": a6})
+    assert c.proposals(1)[1] == 4  # Proposal.voteCount
+    # Can't vote on a non-proposal
+    assert_tx_failed(lambda: c.vote(2, transact={"from": a7}))
+
+
+def test_winning_proposal(w3, c):
+    a0, a1, a2 = w3.eth.accounts[:3]
+    c.giveRightToVote(a0, transact={})
+    c.giveRightToVote(a1, transact={})
+    c.giveRightToVote(a2, transact={})
+    c.vote(0, transact={})
+    # Proposal 0 is now winning
+    assert c.winningProposal() == 0
+    c.vote(1, transact={"from": a1})
+    # Proposal 0 is still winning (the proposals are tied)
+    assert c.winningProposal() == 0
+    c.vote(1, transact={"from": a2})
+    # Proposal 2 is now winning
+    assert c.winningProposal() == 1
+
+
+def test_winner_namer(w3, c):
+    a0, a1, a2 = w3.eth.accounts[:3]
+    c.giveRightToVote(a0, transact={})
+    c.giveRightToVote(a1, transact={})
+    c.giveRightToVote(a2, transact={})
+    c.delegate(a1, transact={"from": a2})
+    c.vote(0, transact={})
+    # Proposal 0 is now winning
+    assert c.winnerName()[:7], b"Clinton"
+    c.vote(1, transact={"from": a1})
+    # Proposal 2 is now winning
+    assert c.winnerName()[:5], b"Trump"
